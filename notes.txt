@@ -1,0 +1,126 @@
+Design and verification using UVM
+
+-> Here we are using 5 different test in testbench.sv
+    - `include "test.sv"; // generation of ransdom data and giving that data to FIFO
+    - `include "wr_test.sv" // pnly performing the write condition, we are expecting when FIFO become full, full condition flag will high.
+    - `include "wr_rd_test.sv"  // writing the data into FIFO and reading back immediatly
+    - `include "wr_then_rd_test.sv" // write data completely and read data completely, expecting full condition after write and empty condition after reading 
+    - `include "wr_rd_parll_test.sv" // testing FIFO can read and write parallely.
+
+-> for different test we are using different test.sv and different sequence for that.
+		ANOTHER TEST CHANGE SEQUENCE(INSIDE BUIL PHASE) AND TEST METHOD(INSIDE TEST BENCH).
+-> As INTEFACE is an physical interface so we need to call/define it as virtual. then only we can access
+
+		
+ ------------------------------------------------------ >>>>>> FLOW <<<<< ------------------------------------------------------
+ 
+1) Starting from TESTBENCH.SV
+	- generation of CLOCK and RESET
+	- Here we are passing the clock and reset into the INTERFACE.
+	- Here we are passing the interface to the DUT.
+	- Declaring the UVM CONFIG DB.
+		- Making the DRIVER access to the INTERFACE through get() method [GO driver.sv 1].
+
+2) INTERFACE.SV
+	- Inside the interface, we have all the pinlevel informations.
+	- This are connecting to the DUT
+	- This interface are getting DATA from the DRIVER.SV [go testbench 4].
+
+3) DRIVER.SV
+	- Call the get() method to have access to the DB for getting the interface.
+		- Now the driver can pass value to the interface and interface will pass it to the DUT.
+
+	- Other than this, it have CLOCKING PORT(to avoid RACE Condition) and MOD PORT(direction of signal with respect to driver);
+		- MONITOR is to get data from DUT. so all signal will act as input
+		- DRIVER is to get the data from the sequence. so DUT input will become output and vice versa [go to test].
+	- [from SEQUENCE 3.2] Driver will get data as packet from sequence.
+		- driver, that packet will convert to pin level format and connect to port of interface.
+		- for getting the interface handle. we will take from DB through get() method.
+		- Then go to RUN_PHASE
+			- Here whatever data has generate inside the sequence that driver need to get through SEQUENCER.
+			- seq_item_port.get_next_item(trans);
+				- seq_item_port is the port of driver.
+				- get_next_item(trans):  this is for calling taking the packet from the sequencer
+				- through DRIVER port, we are getting the trans from SEQUENCER.
+			- So we have to make the connection between the driver and sequencer inside the agent class [go agent 1].
+	- [from agent 1] drive task need to perform (the middle code)
+		- @(posedge vif.DRIVER.clk); when this clock come we need to convert the transaction to pin level format(trans.wr) and send to interface(`DRIV_IF.data_in). DRIV_IF macro already defined inside the driver class.
+		- `DRIV_IF.wr<=trans.wr; interface wr signal is assigned with transaction wr signal.
+		- After that interface will take care of passing this data to DUT(DUT instantiation inside the testbench.sv).
+		- Then monitor has to take back the signal back from DUT as packet level[go monitor 1]
+
+4) TEST.SV
+	- task to generate the random test.
+	- It contain ENV and SEQUENCE class.
+	- Inside the BUILD PHASE function, it create instance of ENV class and that will call ENV constructor [go to ENV class].
+	- RUN PHASE - It is the main thing, that we are starting the stimulus generation and transfering the data. 
+		- This SEQUENCE contain an body task. that will activated calling start method inside the runphase task.
+		- After the data is generated, it will move to DRIVER > DUT > come back to MONITOR > SCORE BOARD.
+		- By raising RAISE_OBJECTION and starting the SEQUENCE START(), RUN_PHASE of all the component starts parallely. until that transaction get completed. we have an objection and no other will disturb it. later drop the objection and move to next method.
+		- fifo_seq.start(env.agt.seqr); we are starting the sequencer(seqr) for this particular sequence(fifo_seq). [go to sequence 3].
+		
+	
+
+5) ENV.SV
+	- It contain the AGENT and SCOREBOARD class [go to TEST class 4].
+	- [from SCOREBOARD 3] inside the connect phase we are connecting the monitor analysis port with scoreboard implementation port.
+
+6) SEQUENCE.SV
+	- it generate the random data.
+	- It contain an task body(). which is responsible for generating data. this will start after calling start method inside the RUN_PHASE inside the test class [go test 4]
+	- On TASK BODY().
+		- this will run for 15 time as per repeat(15) code.
+		-  send_request(req); through this data will go to the driver. [go driver 3].
+
+		
+7) SEQUENCE ITEM.SV
+	- It contain all the transaction item both input and output of DUT.
+		- All inputs are represent in rand keyword, and output remain as it is.
+
+8) AGENT.SV
+	- [from DRIVER 3.4] through connection phase connection is established [go driver 4].
+
+9) MONITOR.SV
+	- DUT will make some action and give back data to test bench
+	- [from driver 4.4] Then monitor has to take back the signal back from DUT as packet level.
+		- inside the RUN_PHASE conversion is happening and it give it to the scoreboard.
+	- As INTEFACE is an physical interface so we need to call/define it as virtual. then only we can access
+	- we have to call ANALYSIS PORT inside the monitor class, as standard port is not available on MONITOR.
+		- uvm_analysis_port#(fifo_seq_item) ap;
+	- then calling the DB for getting access for INTERFACE, inside BUILD_PHASE.
+	- On RUN PHASE
+		- Call transaction item class.
+		- Whatever signal we are getting from the transaction class we are taking it to transaction_item. means taking back pin level items to packet items
+			- trans.wr=`MON_IF.wr;
+			  trans.data_in=`MON_IF.data_in;
+			  trans.full=`MON_IF.full;
+			 
+			  trans.rd=`MON_IF.rd;
+			  trans.data_out=`MON_IF.data_out;
+			  trans.empty=`MON_IF.empty;
+		- After packet creation wait for one cycle, call write method: ap.write(trans);
+			- this write() need to implement on the scoreboard.
+				- this all transaction item are putting inside the analysis port of monitor(ap) and giving to the scoreboard.
+
+10) SCOREBOARD.sv
+	- Declared from uvm_scoreboard
+	- Declaring the analysis implementation port, uvm_analysis_imp#(fifo_seq_item, fifo_scoreboard) scb_port;
+		- inside implementation port we have to define the write() method.
+	- monitor and scorboard are connected inside the ENV class [go env 2].
+	- Inside the Drive() method
+		- we are defining the QUE, into the que we are putting the transaction getting from the monitor everytime.
+			-  fifo_seq_item que[$]; // declaring the que
+			- que.push_back(transaction); Pusing the data inside que.
+	- [IMP]Inside the RUN_PHASE we need to explain the comparison logic.
+		- first thing we need to take the data coming from the monitor into QUE. [above one write() function]
+		- waiting for the que to get at least one data. wait(que.size() > 0).
+		- after data coming, we are taking it to the trans handle, trans = que.pop_front();
+			- Inside the transaction we will get all data like data_in, data_out, rd, wr etc..
+		- THEIR EXIST WRITE AND READ LOGIC.
+			- for trans.wr == 1; while writting we have data_in with us.
+				- That data we are keeping inside one memory mem[$]. means all DATA_IN will be inside MEM
+			- for trans.rd == 1; this time we can compare the data_out coming and data_in 
+				- we know that transaction coming out from FIFO will have some delay.
+				- to handle that delay internally we are calling one clock read_delay_clk.
+				- when trans.rd == 1 or read_delay_clk == 1, then only we will do the comparison checking.
+				- trans will contain all the data_out and mem will contain data_in; 	
